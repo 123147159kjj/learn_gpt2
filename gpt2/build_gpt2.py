@@ -318,7 +318,9 @@ for i in range(50):
     x, y = x.to(device), y.to(device)
     # 清零梯度，防止梯度累积
     optimizer.zero_grad()
-
+    with torch.autocast(device_type=device, dtype=torch.float16):
+        logits, loss = model(x, y)
+        import code;code.interact(local=locals())
     # 前向传播：将输入数据x送入模型，得到模型输出logits和损失loss
     logits, loss = model(x, y)
 
