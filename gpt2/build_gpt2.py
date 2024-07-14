@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 import sys
 import tiktoken
+import time
 
 
 # 定义因果自我注意力机制类
@@ -299,7 +300,9 @@ print(f"using device: {device}")
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
-train_loader = DataLoaderLite(B=4, T=32)
+train_loader = DataLoaderLite(B=4, T=1024)
+
+torch.set_float32_matmul_precision('high')
 
 # get logits
 model = GPT(GPTConfig())
@@ -310,6 +313,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
 # 开始训练循环，迭代50次
 for i in range(50):
+    t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     # 清零梯度，防止梯度累积
@@ -323,9 +327,11 @@ for i in range(50):
 
     # 更新参数：根据计算出的梯度和优化算法更新模型参数
     optimizer.step()
-
-    # 打印当前迭代次数和损失值
-    print(f"步骤 {i}，损失: {loss.item()}")
+    torch.cuda.synchronize()  # wait for the GPU to finish work
+    t1 = time.time()
+    dt = (t1 - t0) * 1000  # time difference in miliseconds
+    tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
+    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
 
 sys.exit(0)
 # prefix tokens
