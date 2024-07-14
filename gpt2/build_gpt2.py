@@ -219,39 +219,39 @@ if torch.cuda.is_available():
     device = "cuda"
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
+device = "cpu"
 print(f"using device: {device}")
-# 设置生成的句子数量和最大生成长度
-num_return_sequences = 5  # 每次生成5个不同的序列
-max_length = 30  # 每个生成的序列最大长度为30
 
-# 从预训练的GPT-2模型加载模型实例  这里的模型是我们自己定义的 但是权重是开源GPT的
-# model = GPT.from_pretrained('gpt2')
-# 重新初始化模型参数权重 用默认值
-model = GPT(GPTConfig())
-# 切换模型到评估模式，关闭dropout等训练时使用的特性
-model.eval()
-# 将模型移动到CUDA设备上，如果可用的话，加速计算
-model.to(device)
-
-# 加载GPT-2的编码器，用于将文本转换为token
 import tiktoken
 
+# 获取批次数据
 enc = tiktoken.get_encoding('gpt2')
-# 编码一段文本为token列表
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B * T + 1])
+x = buf[:-1].view(B, T)
+y = buf[1:].view(B, T)
+
+# get logits
+model = GPT(GPTConfig())
+model.to(device)
+logits = model(x)
+
+print(logits.shape)
+import sys
+
+sys.exit(0)
+# prefix tokens
+model.eval()
+num_return_sequences = 5
+max_length = 30
 tokens = enc.encode("Hello, I'm a language model,")
-# 将token列表转换为PyTorch的长整型张量
-tokens = torch.tensor(tokens, dtype=torch.long)  # 形状为 (8,)
-# 将单个序列复制扩展成多个序列，每个序列都相同，数量等于num_return_sequences
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # 形状变为 (5, 8)
-# 将token张量移动到CUDA设备上
+tokens = torch.tensor(tokens, dtype=torch.long)  # (8,)
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # (5, 8)
 x = tokens.to(device)
-print(x)
-# tensor([[15496,    11,   314,  1101,   257,  3303,  2746,    11],
-#         [15496,    11,   314,  1101,   257,  3303,  2746,    11],
-#         [15496,    11,   314,  1101,   257,  3303,  2746,    11],
-#         [15496,    11,   314,  1101,   257,  3303,  2746,    11],
-#         [15496,    11,   314,  1101,   257,  3303,  2746,    11]],
-#        device='cuda:0')
 
 # 开始生成！此时x的形状是(B, T)，其中B=5（batch size），T=8（初始token序列长度）
 # 为实验设置随机种子，确保每次运行的结果一致
