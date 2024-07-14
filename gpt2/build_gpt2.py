@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import sys
+import tiktoken
 
 
 # 定义因果自我注意力机制类
@@ -217,29 +218,54 @@ class GPT(nn.Module):
         return model  # 返回加载了预训练权重的模型实例
 
 
+# -----------------------------------------------------------------------------
+class DataLoaderLite:
+    def __init__(self, B, T):
+        # 构造函数初始化类的属性
+        self.B = B  # 批量大小
+        self.T = T  # 序列长度
+
+        # 在初始化时，从磁盘加载tokens到内存中
+        with open('input.txt', 'r') as f:
+            text = f.read()  # 读取整个文本文件的内容
+        enc = tiktoken.get_encoding('gpt2')  # 创建GPT-2的编码器实例
+        tokens = enc.encode(text)  # 将文本转换为tokens
+        self.tokens = torch.tensor(tokens)  # 将tokens列表转换为PyTorch的张量
+        print(f"已加载 {len(self.tokens)} 个tokens")  # 打印加载的tokens总数
+        print(f"1轮 = {len(self.tokens) // (B * T)} 个批次")  # 计算并打印一轮包含的批次数量
+
+        # 初始化状态
+        self.current_position = 0  # 当前位置指针，用于跟踪数据流
+
+    def next_batch(self):
+        B, T = self.B, self.T  # 提取批量大小和序列长度
+
+        # 从当前位置开始，截取一个批次的数据
+        buf = self.tokens[self.current_position: self.current_position + B * T + 1]
+
+        # 分割数据为输入和目标
+        x = (buf[:-1]).view(B, T)  # 输入数据，形状为 (B, T)
+        y = (buf[1:]).view(B, T)  # 目标数据，形状为 (B, T)
+
+        # 更新当前位置指针
+        self.current_position += B * T
+
+        # 如果加载下一个批次会超出tokens的边界，则重置位置指针
+        if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_position = 0
+
+        # 返回一个批次的输入和目标数据
+        return x, y
+
 # --------------------------------测试--------------------------------
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
-# device = "cpu"
 print(f"using device: {device}")
 
-import tiktoken
-
-# 获取批次数据
-enc = tiktoken.get_encoding('gpt2')
-with open('input.txt', 'r') as f:
-    text = f.read()
-text = text[:1000]
-tokens = enc.encode(text)
-B, T = 4, 32
-buf = torch.tensor(tokens[:B * T + 1])
-# 移动到相同设备上计算 不然会报错
-buf = buf.to(device)
-x = buf[:-1].view(B, T)
-y = buf[1:].view(B, T)
+train_loader = DataLoaderLite(B=4, T=32)
 
 # get logits
 model = GPT(GPTConfig())
@@ -250,6 +276,8 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
 # 开始训练循环，迭代50次
 for i in range(50):
+    x, y = train_loader.next_batch()
+    x, y = x.to(device), y.to(device)
     # 清零梯度，防止梯度累积
     optimizer.zero_grad()
 
