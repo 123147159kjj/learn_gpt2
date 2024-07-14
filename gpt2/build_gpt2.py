@@ -92,7 +92,6 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
-
 # 使用 @dataclass 装饰器定义一个数据类，用于存储 GPT 模型的配置参数
 @dataclass
 class GPTConfig:
@@ -127,6 +126,8 @@ class GPT(nn.Module):
             'ln_f': nn.LayerNorm(config.n_embd),  # 最终的层归一化
         })
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)  # 语言模型的线性头部
+        # weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight
 
     def forward(self, idx, targets=None):
         # idx 是输入的索引张量，形状为 (B, T)，其中 B 表示批量大小，T 表示序列长度
