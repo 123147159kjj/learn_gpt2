@@ -126,7 +126,7 @@ class GPT(nn.Module):
         })
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)  # 语言模型的线性头部
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         # idx 是输入的索引张量，形状为 (B, T)，其中 B 表示批量大小，T 表示序列长度
         B, T = idx.size()
 
@@ -155,8 +155,11 @@ class GPT(nn.Module):
         # 最后通过语言模型的分类器（即全连接层），输出形状为 (B, T, vocab_size)，即每个位置上的词汇预测概率
         logits = self.lm_head(x)
 
-        # 返回模型的输出
-        return logits
+        # 预测的logits（模型的原始输出，通常是未经过softmax函数的值）和真实的目标值
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -238,9 +241,9 @@ y = buf[1:].view(B, T)
 # get logits
 model = GPT(GPTConfig())
 model.to(device)
-logits = model(x)
+logits, loss = model(x, y)
 
-print(logits.shape)
+print(loss)
 import sys
 
 sys.exit(0)
