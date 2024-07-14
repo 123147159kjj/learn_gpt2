@@ -19,6 +19,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # 输出线性层
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
         # 保存配置中的头数和嵌入维度
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -61,6 +62,7 @@ class MLP(nn.Module):
         self.gelu = nn.GELU(approximate='tanh')
         # 输出线性层
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
 
     # 前向传播函数
     def forward(self, x):
@@ -91,6 +93,7 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
+
 
 # 使用 @dataclass 装饰器定义一个数据类，用于存储 GPT 模型的配置参数
 @dataclass
@@ -128,6 +131,33 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)  # 语言模型的线性头部
         # weight sharing scheme lm_head和wte共享权重
         self.transformer.wte.weight = self.lm_head.weight
+        # init params 初始化网络中的所有可学习参数
+        # 是一个PyTorch提供的方法，它会递归地遍历模型的所有子模块（包括每一层，如线性层、嵌入层等），
+        # 并对每一个子模块应用一个函数。这个函数可以是任何接受一个模块作为输入的操作。
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        # 检查模块是否是线性层（全连接层）
+        if isinstance(module, nn.Linear):
+            # 设置标准差，默认为0.02
+            std = 0.02
+
+            # 检查模块是否具有特定的属性NANOGPT_SCALE_INIT，用于调整初始化的标准差
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                # 根据模型的层数调整标准差，通常用于深层网络的权重初始化
+                std *= (2 * self.config.n_layer) ** -0.5
+
+            # 使用正态分布初始化线性层的权重
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+
+            # 如果线性层有偏置项，使用零初始化
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+
+        # 检查模块是否是嵌入层
+        elif isinstance(module, nn.Embedding):
+            # 使用正态分布初始化嵌入层的权重，均值为0，标准差为0.02
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         # idx 是输入的索引张量，形状为 (B, T)，其中 B 表示批量大小，T 表示序列长度
@@ -258,6 +288,7 @@ class DataLoaderLite:
         # 返回一个批次的输入和目标数据
         return x, y
 
+
 # --------------------------------测试--------------------------------
 device = "cpu"
 if torch.cuda.is_available():
@@ -265,7 +296,9 @@ if torch.cuda.is_available():
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
 print(f"using device: {device}")
-
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 train_loader = DataLoaderLite(B=4, T=32)
 
 # get logits
