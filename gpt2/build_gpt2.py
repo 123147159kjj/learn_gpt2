@@ -314,7 +314,7 @@ model.to(device)
 
 # optimize!
 # 创建AdamW优化器实例，传入模型的所有可训练参数，设置学习率为3e-4
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 
 # 开始训练循环，迭代50次
 for i in range(50):
@@ -331,7 +331,7 @@ for i in range(50):
 
     # 反向传播：计算损失相对于模型参数的梯度
     loss.backward()
-
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     # 更新参数：根据计算出的梯度和优化算法更新模型参数
     optimizer.step()
     torch.cuda.synchronize()  # wait for the GPU to finish work
@@ -339,7 +339,7 @@ for i in range(50):
     dt = t1 - t0
     tokens_processed = train_loader.B * train_loader.T
     tokens_per_sec = tokens_processed / dt
-    print(f"step {i:4d} | loss: {loss.item():.6f} | dt: {dt * 1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+    print(f"step {i:4d} | loss: {loss.item():.6f} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
 
 sys.exit(0)
 # prefix tokens
