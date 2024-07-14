@@ -126,6 +126,38 @@ class GPT(nn.Module):
         })
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)  # 语言模型的线性头部
 
+    def forward(self, idx):
+        # idx 是输入的索引张量，形状为 (B, T)，其中 B 表示批量大小，T 表示序列长度
+        B, T = idx.size()
+
+        # 断言检查，确保序列长度不超过模型配置的块大小（block_size）
+        assert T <= self.config.block_size, f"无法对长度为{T}的序列进行前向传播，因为块大小仅为{self.config.block_size}"
+
+        # 创建位置编码张量，范围从0到T-1
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)  # 形状为 (T)
+
+        # 通过Transformer的位置嵌入层获取位置编码，形状为 (T, n_embd)
+        pos_emb = self.transformer.wpe(pos)
+
+        # 通过Transformer的词嵌入层获取词嵌入，形状为 (B, T, n_embd)
+        tok_emb = self.transformer.wte(idx)
+
+        # 将词嵌入与位置编码相加
+        x = tok_emb + pos_emb
+
+        # 依次通过Transformer中的每一个Block进行前向传播
+        for block in self.transformer.h:
+            x = block(x)
+
+        # 通过Transformer的最终层归一化层
+        x = self.transformer.ln_f(x)
+
+        # 最后通过语言模型的分类器（即全连接层），输出形状为 (B, T, vocab_size)，即每个位置上的词汇预测概率
+        logins = self.lm_head(x)
+
+        # 返回模型的输出
+        return logins
+
     @classmethod
     def from_pretrained(cls, model_type):
         """从预训练的 GPT-2 模型加载权重,加载已经训练好的权重主要是模仿gpt2功能"""
