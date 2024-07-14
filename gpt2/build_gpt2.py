@@ -215,7 +215,6 @@ class GPT(nn.Module):
 
         return model  # 返回加载了预训练权重的模型实例
 
-
 # --------------------------------测试--------------------------------
 device = "cpu"
 if torch.cuda.is_available():
