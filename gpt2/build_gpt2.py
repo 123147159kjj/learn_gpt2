@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import sys
 
 
 # 定义因果自我注意力机制类
@@ -215,13 +216,14 @@ class GPT(nn.Module):
 
         return model  # 返回加载了预训练权重的模型实例
 
+
 # --------------------------------测试--------------------------------
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
-device = "cpu"
+# device = "cpu"
 print(f"using device: {device}")
 
 import tiktoken
@@ -234,16 +236,34 @@ text = text[:1000]
 tokens = enc.encode(text)
 B, T = 4, 32
 buf = torch.tensor(tokens[:B * T + 1])
+# 移动到相同设备上计算 不然会报错
+buf = buf.to(device)
 x = buf[:-1].view(B, T)
 y = buf[1:].view(B, T)
 
 # get logits
 model = GPT(GPTConfig())
 model.to(device)
-logits, loss = model(x, y)
+# optimize!
+# 创建AdamW优化器实例，传入模型的所有可训练参数，设置学习率为3e-4
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
-print(loss)
-import sys
+# 开始训练循环，迭代50次
+for i in range(50):
+    # 清零梯度，防止梯度累积
+    optimizer.zero_grad()
+
+    # 前向传播：将输入数据x送入模型，得到模型输出logits和损失loss
+    logits, loss = model(x, y)
+
+    # 反向传播：计算损失相对于模型参数的梯度
+    loss.backward()
+
+    # 更新参数：根据计算出的梯度和优化算法更新模型参数
+    optimizer.step()
+
+    # 打印当前迭代次数和损失值
+    print(f"步骤 {i}，损失: {loss.item()}")
 
 sys.exit(0)
 # prefix tokens
