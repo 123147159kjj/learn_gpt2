@@ -307,6 +307,8 @@ torch.set_float32_matmul_precision('high')
 # get logits
 model = GPT(GPTConfig())
 model.to(device)
+model = torch.compile(model)
+
 # optimize!
 # 创建AdamW优化器实例，传入模型的所有可训练参数，设置学习率为3e-4
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
@@ -320,7 +322,7 @@ for i in range(50):
     optimizer.zero_grad()
     with torch.autocast(device_type=device, dtype=torch.float16):
         logits, loss = model(x, y)
-        import code;code.interact(local=locals())
+        # import code;code.interact(local=locals())
     # 前向传播：将输入数据x送入模型，得到模型输出logits和损失loss
     logits, loss = model(x, y)
 
