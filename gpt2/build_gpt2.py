@@ -126,7 +126,7 @@ class GPT(nn.Module):
             'ln_f': nn.LayerNorm(config.n_embd),  # 最终的层归一化
         })
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)  # 语言模型的线性头部
-        # weight sharing scheme
+        # weight sharing scheme lm_head和wte共享权重
         self.transformer.wte.weight = self.lm_head.weight
 
     def forward(self, idx, targets=None):
