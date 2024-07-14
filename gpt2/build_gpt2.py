@@ -214,16 +214,24 @@ class GPT(nn.Module):
 
 
 # --------------------------------测试--------------------------------
+device = "cpu"
+if torch.cuda.is_available():
+    device = "cuda"
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps"
+print(f"using device: {device}")
 # 设置生成的句子数量和最大生成长度
 num_return_sequences = 5  # 每次生成5个不同的序列
 max_length = 30  # 每个生成的序列最大长度为30
 
 # 从预训练的GPT-2模型加载模型实例  这里的模型是我们自己定义的 但是权重是开源GPT的
-model = GPT.from_pretrained('gpt2')
+# model = GPT.from_pretrained('gpt2')
+# 重新初始化模型参数权重 用默认值
+model = GPT(GPTConfig())
 # 切换模型到评估模式，关闭dropout等训练时使用的特性
 model.eval()
 # 将模型移动到CUDA设备上，如果可用的话，加速计算
-model.to('cuda')
+model.to(device)
 
 # 加载GPT-2的编码器，用于将文本转换为token
 import tiktoken
@@ -236,7 +244,7 @@ tokens = torch.tensor(tokens, dtype=torch.long)  # 形状为 (8,)
 # 将单个序列复制扩展成多个序列，每个序列都相同，数量等于num_return_sequences
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # 形状变为 (5, 8)
 # 将token张量移动到CUDA设备上
-x = tokens.to('cuda')
+x = tokens.to(device)
 print(x)
 # tensor([[15496,    11,   314,  1101,   257,  3303,  2746,    11],
 #         [15496,    11,   314,  1101,   257,  3303,  2746,    11],
@@ -284,3 +292,4 @@ for i in range(num_return_sequences):
     decoded = enc.decode(tokens)
     # 打印生成的文本
     print(">", decoded)
+# ------生面演示过程:自定义模型-->加载开源模型参数-->输入(编码)-->模型处理-->输出(解码)----
