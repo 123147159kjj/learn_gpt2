@@ -153,10 +153,10 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
 
         # 最后通过语言模型的分类器（即全连接层），输出形状为 (B, T, vocab_size)，即每个位置上的词汇预测概率
-        logins = self.lm_head(x)
+        logits = self.lm_head(x)
 
         # 返回模型的输出
-        return logins
+        return logits
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -213,6 +213,74 @@ class GPT(nn.Module):
         return model  # 返回加载了预训练权重的模型实例
 
 
-# -----------------------------------------------------------------------------
+# --------------------------------测试--------------------------------
+# 设置生成的句子数量和最大生成长度
+num_return_sequences = 5  # 每次生成5个不同的序列
+max_length = 30  # 每个生成的序列最大长度为30
+
+# 从预训练的GPT-2模型加载模型实例  这里的模型是我们自己定义的 但是权重是开源GPT的
 model = GPT.from_pretrained('gpt2')
-print("run success!")
+# 切换模型到评估模式，关闭dropout等训练时使用的特性
+model.eval()
+# 将模型移动到CUDA设备上，如果可用的话，加速计算
+model.to('cuda')
+
+# 加载GPT-2的编码器，用于将文本转换为token
+import tiktoken
+
+enc = tiktoken.get_encoding('gpt2')
+# 编码一段文本为token列表
+tokens = enc.encode("Hello, I'm a language model,")
+# 将token列表转换为PyTorch的长整型张量
+tokens = torch.tensor(tokens, dtype=torch.long)  # 形状为 (8,)
+# 将单个序列复制扩展成多个序列，每个序列都相同，数量等于num_return_sequences
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # 形状变为 (5, 8)
+# 将token张量移动到CUDA设备上
+x = tokens.to('cuda')
+print(x)
+# tensor([[15496,    11,   314,  1101,   257,  3303,  2746,    11],
+#         [15496,    11,   314,  1101,   257,  3303,  2746,    11],
+#         [15496,    11,   314,  1101,   257,  3303,  2746,    11],
+#         [15496,    11,   314,  1101,   257,  3303,  2746,    11],
+#         [15496,    11,   314,  1101,   257,  3303,  2746,    11]],
+#        device='cuda:0')
+
+# 开始生成！此时x的形状是(B, T)，其中B=5（batch size），T=8（初始token序列长度）
+# 为实验设置随机种子，确保每次运行的结果一致
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+
+# 循环直到生成的序列长度达到设定的最大值max_length
+while x.size(1) < max_length:
+    # 前向传播模型获取logits（未归一化的概率）
+    with torch.no_grad():  # 不需要计算梯度，节省内存
+        logits = model(x)  # 输出形状为 (B, T, vocab_size)
+
+    # 取出logits的最后一位置，即最后一个token的logits
+    logits = logits[:, -1, :]  # 形状变为 (B, vocab_size)
+
+    # 转换logits为概率分布
+    probs = F.softmax(logits, dim=-1)
+
+    # 进行top-k采样，选择前50个最高概率的token（这是Hugging Face管道的默认设置）
+    # topk_probs形状变为 (B, 50)，topk_indices也是 (B, 50)
+    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+
+    # 从top-k的概率中选择一个token
+    # 注意：multinomial函数不需要输入概率总和为1
+    ix = torch.multinomial(topk_probs, 1)  # 形状为 (B, 1)
+
+    # 根据选择的索引，获取对应的token
+    xcol = torch.gather(topk_indices, -1, ix)  # 形状为 (B, 1)
+
+    # 将新选出的token附加到序列末尾
+    x = torch.cat((x, xcol), dim=1)
+
+# 打印生成的文本
+for i in range(num_return_sequences):
+    # 获取第i个序列的token，并转换为list
+    tokens = x[i, :max_length].tolist()
+    # 解码token列表为文本字符串
+    decoded = enc.decode(tokens)
+    # 打印生成的文本
+    print(">", decoded)
