@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import sys
+import inspect
 import tiktoken
 import time
 
@@ -252,6 +253,49 @@ class GPT(nn.Module):
         return model  # 返回加载了预训练权重的模型实例
 
 
+def configure_optimizers(self, weight_decay, learning_rate, device):
+    # 从模型中获取所有需要梯度更新的参数名称和参数值的字典
+    param_dict = {pn: p for pn, p in self.named_parameters()}
+    # 过滤出需要进行梯度计算的参数
+    param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+
+    # 创建优化器组。任何二维或更高维度的张量将被施加权重衰减，
+    # 否则不施加权重衰减。即所有的矩阵乘法中的权重张量+嵌入(embeddings)将衰减，
+    # 所有偏置项和层归一化层不会衰减。
+    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]  # 需要衰减的参数列表
+    nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]  # 不需要衰减的参数列表
+
+    # 将参数分为两组，一组带有权重衰减，另一组不带权重衰减
+    optim_groups = [
+        {'params': decay_params, 'weight_decay': weight_decay},  # 衰减参数组
+        {'params': nodecay_params, 'weight_decay': 0.0}  # 非衰减参数组
+    ]
+
+    # 统计衰减和非衰减参数的数量及总参数数
+    num_decay_params = sum(p.numel() for p in decay_params)
+    num_nodecay_params = sum(p.numel() for p in nodecay_params)
+    print(f"需要衰减的参数张量数量: {len(decay_params)}, 参数总数为: {num_decay_params:,}")
+    print(f"不需要衰减的参数张量数量: {len(nodecay_params)}, 参数总数为: {num_nodecay_params:,}")
+
+    # 创建AdamW优化器，并在可用的情况下使用融合版本
+    # 检查torch.optim.AdamW是否支持fused参数
+    fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+    # 根据设备类型决定是否使用融合版本
+    use_fused = fused_available and 'cuda' in device
+    print(f"是否使用融合AdamW优化器: {use_fused}")
+
+    # 实例化AdamW优化器
+    optimizer = torch.optim.AdamW(
+        optim_groups,
+        lr=learning_rate,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+        fused=use_fused
+    )
+    # 返回优化器实例
+    return optimizer
+
+
 # -----------------------------------------------------------------------------
 class DataLoaderLite:
     def __init__(self, B, T):
@@ -333,7 +377,8 @@ def get_lr(it):
 
 # optimize!
 # 创建AdamW优化器实例，传入模型的所有可训练参数，设置学习率为3e-4
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
 # 开始训练循环，迭代50次
 for step in range(max_steps):
