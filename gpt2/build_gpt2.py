@@ -7,6 +7,7 @@ import sys
 import inspect
 import tiktoken
 import time
+import os
 
 
 # 定义因果自我注意力机制类
@@ -272,15 +273,17 @@ class GPT(nn.Module):
         # 统计衰减和非衰减参数的数量及总参数数
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"需要衰减的参数张量数量: {len(decay_params)}, 参数总数为: {num_decay_params:,}")
-        print(f"不需要衰减的参数张量数量: {len(nodecay_params)}, 参数总数为: {num_nodecay_params:,}")
+        if master_process:
+            print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+            print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
 
         # 创建AdamW优化器，并在可用的情况下使用融合版本
         # 检查torch.optim.AdamW是否支持fused参数
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         # 根据设备类型决定是否使用融合版本
         use_fused = fused_available and 'cuda' in device
-        print(f"是否使用融合AdamW优化器: {use_fused}")
+        if master_process:
+            print(f"using fused AdamW: {use_fused}")
 
         # 实例化AdamW优化器
         optimizer = torch.optim.AdamW(
@@ -296,10 +299,12 @@ class GPT(nn.Module):
 
 # -----------------------------------------------------------------------------
 class DataLoaderLite:
-    def __init__(self, B, T):
+    def __init__(self, B, T, process_rank, num_processes):
         # 构造函数初始化类的属性
         self.B = B  # 批量大小
         self.T = T  # 序列长度
+        self.process_rank = process_rank
+        self.num_processes = num_processes
 
         # 在初始化时，从磁盘加载tokens到内存中
         with open('input.txt', 'r') as f:
@@ -310,8 +315,11 @@ class DataLoaderLite:
         print(f"已加载 {len(self.tokens)} 个tokens")  # 打印加载的tokens总数
         print(f"1轮 = {len(self.tokens) // (B * T)} 个批次")  # 计算并打印一轮包含的批次数量
 
-        # 初始化状态
-        self.current_position = 0  # 当前位置指针，用于跟踪数据流
+        if master_process:
+            print(f"loaded {len(self.tokens)} tokens")
+
+        # state
+        self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
         B, T = self.B, self.T  # 提取批量大小和序列长度
@@ -322,37 +330,59 @@ class DataLoaderLite:
         # 分割数据为输入和目标
         x = (buf[:-1]).view(B, T)  # 输入数据，形状为 (B, T)
         y = (buf[1:]).view(B, T)  # 目标数据，形状为 (B, T)
-
-        # 更新当前位置指针
-        self.current_position += B * T
-
+        self.current_position += B * T * self.num_processes
         # 如果加载下一个批次会超出tokens的边界，则重置位置指针
-        if self.current_position + (B * T + 1) > len(self.tokens):
-            self.current_position = 0
-
-        # 返回一个批次的输入和目标数据
+        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+            self.current_position = self.B * self.T * self.process_rank
         return x, y
 
 
 # --------------------------------测试--------------------------------
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps"
-print(f"using device: {device}")
+# run the training loop
+from torch.distributed import init_process_group, destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+
+# set up DDP (distributed data parallel).
+# torchrun command sets the env variables RANK, LOCAL_RANK, and WORLD_SIZE
+ddp = int(os.environ.get('RANK', -1)) != -1  # is this a ddp run?
+if ddp:
+    # use of DDP atm demands CUDA, we set the device appropriately according to rank
+    assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0  # this process will do logging, checkpointing etc.
+else:
+    # vanilla, non-DDP run
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    # attempt to autodetect device
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    print(f"using device: {device}")
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 total_batch_size = 524288  # 2**19, ~0.5M, in number of tokens
 B = 16  # micro batch size
 T = 1024  # sequence length
-assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
-grad_accum_steps = total_batch_size // (B * T)
-print(f"total desired batch size: {total_batch_size}")
-print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+assert total_batch_size % (
+        B * T * ddp_world_size) == 0, "make sure total_batch_size is divisible by B * T * ddp_world_size"
+grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
+if master_process:
+    print(f"total desired batch size: {total_batch_size}")
+    print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
 
-train_loader = DataLoaderLite(B=B, T=T)
+train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
 
 torch.set_float32_matmul_precision('high')
 
@@ -361,6 +391,10 @@ model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
 # windows不支持
 # model = torch.compile(model)
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module if ddp else model  # always contains the "raw" unwrapped model
+
 max_lr = 6e-4
 min_lr = max_lr * 0.1
 warmup_steps = 10
@@ -384,8 +418,8 @@ def get_lr(it):
 # optimize!
 # 创建AdamW优化器实例，传入模型的所有可训练参数，设置学习率为3e-4
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
-
+# optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 # 遍历最大步数
 for step in range(max_steps):
     t0 = time.time()  # 开始计时
@@ -415,10 +449,11 @@ for step in range(max_steps):
         loss = loss / grad_accum_steps
 
         # 累积损失值
-        loss_accum += loss.detach()
-
-        # 反向传播，计算损失相对于模型参数的梯度
-        loss.backward(retain_graph=True)
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
+        loss.backward()
+    if ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
     # 梯度裁剪，防止梯度爆炸
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
@@ -438,15 +473,15 @@ for step in range(max_steps):
     t1 = time.time()  # 结束计时
     dt = t1 - t0  # 计算时间差
 
-    # 计算处理的令牌数量
-    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
-
-    # 计算每秒处理的令牌数量
+    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps * ddp_world_size
     tokens_per_sec = tokens_processed / dt
-    print(
-        f"step {step:4d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt * 1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+    if master_process:
+        print(
+            f"step {step:4d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt * 1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
 
-sys.exit(0)
+if ddp:
+    destroy_process_group()
+import sys; sys.exit(0)
 # prefix tokens
 model.eval()
 num_return_sequences = 5
