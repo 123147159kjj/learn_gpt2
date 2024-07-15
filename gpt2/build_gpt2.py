@@ -124,7 +124,6 @@ class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()  # 调用父类构造函数
         self.config = config  # 设置模型配置
-
         # 创建一个包含 GPT 模型组件的字典，使用 ModuleDict 来管理
         self.transformer = nn.ModuleDict({
             'wte': nn.Embedding(config.vocab_size, config.n_embd),  # 词嵌入层
@@ -133,9 +132,9 @@ class GPT(nn.Module):
             'ln_f': nn.LayerNorm(config.n_embd),  # 最终的层归一化
         })
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)  # 语言模型的线性头部
-        # weight sharing scheme lm_head和wte共享权重
+        # weight sharing scheme lm_head和wte共享权重 好处是减少模型参数的数量，同时由于输入和输出层在某种程度上是对称的，这种共享还能帮助模型学习到更好的表示
         self.transformer.wte.weight = self.lm_head.weight
-        # init params 初始化网络中的所有可学习参数
+        # 初始化网络中的所有可学习参数
         # 是一个PyTorch提供的方法，它会递归地遍历模型的所有子模块（包括每一层，如线性层、嵌入层等），
         # 并对每一个子模块应用一个函数。这个函数可以是任何接受一个模块作为输入的操作。
         self.apply(self._init_weights)
@@ -387,35 +386,62 @@ def get_lr(it):
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
+# 遍历最大步数
 for step in range(max_steps):
-    t0 = time.time()
-    optimizer.zero_grad()
-    loss_accum = 0.0
-    for micro_step in range(grad_accum_steps):
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device, dtype=torch.float16):
-            logits, loss = model(x, y)
-        # we have to scale the loss to account for gradient accumulation,
-        # because the gradients just add on each successive backward().
-        # addition of gradients corresponds to a SUM in the objective, but
-        # instead of a SUM we want MEAN. Scale the loss here so it comes out right
-        loss = loss / grad_accum_steps
-        loss_accum += loss.detach()
-        loss.backward()
+    t0 = time.time()  # 开始计时
 
-    # 反向传播：计算损失相对于模型参数的梯度
-    loss.backward()
+    # 将优化器的梯度归零，避免梯度累积
+    optimizer.zero_grad()
+
+    # 初始化累积损失为0
+    loss_accum = 0.0
+
+    # 循环执行梯度累积步骤次数
+    for micro_step in range(grad_accum_steps):
+        # 获取下一批次的数据
+        x, y = train_loader.next_batch()
+
+        # 将数据转移到指定设备（如GPU）
+        x, y = x.to(device), y.to(device)
+
+        # 使用自动混合精度训练
+        with torch.autocast(device_type=device, dtype=torch.float16):
+            # 前向传播，获取模型输出和损失
+            logits, loss = model(x, y)
+
+        # 缩放损失值，以适应梯度累积
+        # 因为梯度会在每次backward()调用时累加，
+        # 我们需要在这里缩放损失以得到平均损失而不是总和
+        loss = loss / grad_accum_steps
+
+        # 累积损失值
+        loss_accum += loss.detach()
+
+        # 反向传播，计算损失相对于模型参数的梯度
+        loss.backward(retain_graph=True)
+    # 梯度裁剪，防止梯度爆炸
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+    # 获取当前的学习率
     lr = get_lr(step)
+
+    # 设置优化器的学习率为当前学习率
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-    # 更新参数：根据计算出的梯度和优化算法更新模型参数
+
+    # 更新参数，根据计算出的梯度和优化算法更新模型参数
     optimizer.step()
-    torch.cuda.synchronize()  # wait for the GPU to finish work
-    t1 = time.time()
-    dt = t1 - t0
+
+    # 同步GPU操作，等待GPU完成所有工作
+    torch.cuda.synchronize()
+
+    t1 = time.time()  # 结束计时
+    dt = t1 - t0  # 计算时间差
+
+    # 计算处理的令牌数量
     tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+
+    # 计算每秒处理的令牌数量
     tokens_per_sec = tokens_processed / dt
     print(
         f"step {step:4d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt * 1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
@@ -469,4 +495,4 @@ for i in range(num_return_sequences):
     decoded = enc.decode(tokens)
     # 打印生成的文本
     print(">", decoded)
-# ------生面演示过程:自定义模型-->加载开源模型参数-->输入(编码)-->模型处理-->输出(解码)----
+# ------上面演示过程:自定义模型-->加载开源模型参数-->输入(编码)-->模型处理-->输出(解码)----
